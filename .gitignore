@@ -1,8 +1,12 @@
 # homework private data
-# docs/
-# queries/
-# *_list.txt
-# *.npy
+docs/
+queries/
+*_list.txt
+*.npy
+*.pdf
+
+# Pycharm 
+.idea/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
