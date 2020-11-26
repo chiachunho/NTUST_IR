@@ -4,6 +4,8 @@ queries/
 *_list.txt
 *.npy
 *.pdf
+*.npz
+*_list*.txt
 
 # Pycharm 
 .idea/
