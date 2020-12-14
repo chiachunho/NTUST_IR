@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import scipy.sparse
 from tqdm import tqdm
+from numba import njit
 from collections import Counter
 from sklearn.metrics.pairwise import cosine_similarity
 # %%
@@ -50,7 +51,21 @@ words_index = dict()
 
 for word_index in range(len(words)):
     words_index[words[word_index]] = word_index
+# %%
+def preproccess_words(vocabulary):
+    new_word_index = 0
+    index_dict = dict()
+    result_words = []
+    for word in tqdm(vocabulary, desc="Vocabulary"):
+        if len(word) > 1:
+            result_words.append(word)
+            index_dict[word] = new_word_index
+            new_word_index += 1
+    
+    return result_words, index_dict
+# %%
 
+words, words_index = preproccess_words(words)
 # %%
 def counters_conv2_tf_idf(counter_list, vocabulary_dict, smooth_idf=True, sublinear_tf=False):
     # term frequency
@@ -60,9 +75,10 @@ def counters_conv2_tf_idf(counter_list, vocabulary_dict, smooth_idf=True, sublin
     for index in tqdm(range(len(counter_list)), desc="TF"):
         doc_words = list(counter_list[index])
         for word in doc_words:
-            data.append(counter_list[index][word])
-            col.append(vocabulary_dict[word])
-            row.append(index)
+            if len(word) > 1:
+                data.append(counter_list[index][word])
+                col.append(vocabulary_dict[word])
+                row.append(index)
     if sublinear_tf:
         data = 1 + np.log(data)
     tf = scipy.sparse.csr_matrix((data, (row, col)), shape=(len(counter_list), len(vocabulary_dict)), dtype=np.float64)
@@ -94,78 +110,114 @@ queries_tf
 
 # %%
 
+def l2_norm(matrix):
+    # for r_index in tqdm(range(matrix.shape[0])):
+    #     matrix[r_index] /= np.dot(matrix[r_index], matrix[r_index].T).power(0.5).data[0]
+    # return matrix
+    for r_index in tqdm(range(matrix.shape[0])):
+        matrix[r_index] /= np.sqrt(np.sum(np.power(matrix[r_index].data, 2)))
+    return matrix
+# %%
+@njit
+def _l2_norm(data, row, indices, indptr):
+    power_data = np.square(data)
+    for r_index in range(row):
+        r_sum = 0.0
+        for c_index in range(indptr[r_index], indptr[r_index + 1]):
+            r_sum += power_data[c_index]
+        # prevent csr bug
+        if r_sum != 0:
+            r_sum = np.sqrt(r_sum)
+            for c_index in range(indptr[r_index], indptr[r_index + 1]):
+                data[c_index] /= r_sum
+    return data
+
+# %%
+def l2_norm(matrix):
+    data = matrix.data
+    shape = matrix.shape
+    indices = matrix.indices
+    indptr = matrix.indptr
+    dtype = matrix.dtype
+    l2_norm_data = _l2_norm(data, shape[0], indices, indptr)
+    l2_norm_matrix = scipy.sparse.csr_matrix((l2_norm_data, indices, indptr), shape=shape, dtype=dtype)
+    
+    return l2_norm_matrix
+# %%
+
 tf_idf_docs = scipy.sparse.csr_matrix.multiply(docs_tf, idf).tocsr()
 tf_idf_queries = scipy.sparse.csr_matrix.multiply(queries_tf, idf).tocsr()
 
-first_round_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
+# l2 norm
+tf_idf_docs = l2_norm(tf_idf_docs)
+tf_idf_queries = l2_norm(tf_idf_queries)
+
+retrieval_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
+retrieval_ranking = np.flip(retrieval_result.argsort(axis=0), axis=0).T
 
 # %%
-sim_df = pd.DataFrame(first_round_result)
-sim_df.index = doc_list
-sim_df.columns = query_list
-
-
-# %%
-sim_df
-# %%
-# save results
-now = datetime.datetime.now()
-save_filename = 'results/vsm_result' + '_word'+ str(len(words)) + now.strftime("_%y%m%d_%H%M") + '.txt'
-print(save_filename)
-
-with open(save_filename, 'w') as f:
-    f.write('Query,RetrievedDocuments\n')
-    for query in query_list:
-        f.write(query + ",")
-        query_sim_df = sim_df[query].sort_values(ascending=False)
-        f.write(' '.join(query_sim_df[:5000].index.to_list()) + '\n')
-# %%
-
-def export_to_csv(result, word, alpha, reledocs, method='rocchio', epoch=1):
-
-    # result dataframe
-    sim_df = pd.DataFrame(result)
-    sim_df.index = doc_list
-    sim_df.columns = query_list
+def export_to_csv(ranking, method, word, alpha=0, beta=0, gamma=0, reledocs=0, nreledocs=0, epoch=0):
 
     # save results
     now = datetime.datetime.now()
     save_filename = 'results/'+ method +'_result' + '_word'+ str(word) + '_a' + str(alpha) + '_reledocs' + str(reledocs) + '_epoch' + str(epoch) + now.strftime("_%y%m%d_%H%M") + '.txt'
+    save_filename = f'results/{method}_result_word{word}_a{alpha}_b{beta}_g{gamma}_reledocs{reledocs}_nreledocs{nreledocs}_epoch{epoch}_{now.strftime("%y%m%d_%H%M")}.txt'
     print(save_filename)
 
     with open(save_filename, 'w') as f:
         f.write('Query,RetrievedDocuments\n')
-        for query in query_list:
-            f.write(query + ",")
-            query_sim_df = sim_df[query].sort_values(ascending=False)
-            f.write(' '.join(query_sim_df[:5000].index.to_list()) + '\n')
+        for query_index in range(len(query_list)):
+            f.write(query_list[query_index] + ",")
+            doc_ranking = [doc_list[doc_index] for doc_index in ranking[query_index][:5000]]
+            f.write(' '.join(doc_ranking) + '\n')
 
 # %%
-alpha = 0.3
-relevant_docs_amount = 5
-EPOCH = 5
+# save results
+# export_to_csv(retrieval_ranking, "svm", len(words))
 
 # %%
+alpha = 1
+beta = 0.75
+gamma = 0.15
+reledocs_amount = 5
+n_reledocs_amount = 1
+EPOCH = 10
 
-prev_round_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
-prev_tf_idf_queries = tf_idf_queries
-
+# %%
+# Calculate second or more-round TF-IDF(doc, reformulate-query) Vector Space Model
 
 for iter in tqdm(range(EPOCH)):
-    re_tf_idf_queries = scipy.sparse.csr_matrix(tf_idf_queries.shape, dtype=np.float64)
-
     for q in range(len(query_list)):
-        fixed_rq_doc_vector = scipy.sparse.csr_matrix((1, len(words)), dtype=np.float64)
-        for doc_index in np.flip(np.argsort(prev_round_result[:,q]))[:relevant_docs_amount]:
-            fixed_rq_doc_vector += tf_idf_docs[doc_index]
-        fixed_rq_doc_vector /= relevant_docs_amount
-        
-        re_tf_idf_queries[q] = alpha * tf_idf_queries[q] + (1 - alpha) * fixed_rq_doc_vector
+        reledocs_vector = tf_idf_docs[retrieval_ranking[q][:reledocs_amount]]
+        reledocs_vector = scipy.sparse.csr_matrix(reledocs_vector.mean(axis=0))
+        n_reledocs_vector = tf_idf_docs[retrieval_ranking[q][-n_reledocs_amount:]]
+        n_reledocs_vector = scipy.sparse.csr_matrix(n_reledocs_vector.mean(axis=0))
+        tf_idf_queries[q] = alpha * tf_idf_queries[q] + beta * reledocs_vector - gamma * n_reledocs_vector
 
     # Calculate second-round TF-IDF(doc, reformulate-query) Vector Space Model
-    prev_round_result = cosine_similarity(tf_idf_docs, re_tf_idf_queries)
-    prev_tf_idf_queries = re_tf_idf_queries
+    retrieval_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
+    retrieval_ranking = np.flip(retrieval_result.argsort(axis=0), axis=0).T
 
-    export_to_csv(prev_round_result, len(words), alpha, relevant_docs_amount, epoch=iter+1)
+    export_to_csv(retrieval_ranking, 'rocchio', len(words), alpha=alpha, beta=beta, reledocs=reledocs_amount, nreledocs=n_reledocs_amount, epoch=iter+1)
+
+# %%
+
+# for iter in tqdm(range(EPOCH)):
+#     re_tf_idf_queries = scipy.sparse.csr_matrix(tf_idf_queries.shape, dtype=np.float64)
+
+#     for q in range(len(query_list)):
+#         fixed_rq_doc_vector = scipy.sparse.csr_matrix((1, len(words)), dtype=np.float64)
+#         for doc_index in retrieval_ranking[q][:reledocs_amount]:
+#             fixed_rq_doc_vector += tf_idf_docs[doc_index]
+#         fixed_rq_doc_vector = fixed_rq_doc_vector.mean(axis=0)
+        
+#         re_tf_idf_queries[q] = alpha * tf_idf_queries[q] + beta * fixed_rq_doc_vector
+
+#     # Calculate second-round TF-IDF(doc, reformulate-query) Vector Space Model
+#     tf_idf_queries = re_tf_idf_queries
+#     retrieval_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
+#     retrieval_ranking = np.flip(retrieval_result.argsort(axis=0), axis=0).T
+
+#     export_to_csv(retrieval_ranking, 'rocchio', len(words), alpha=alpha, beta=beta, reledocs=reledocs_amount, epoch=iter+1)
 
 # %%
