@@ -46,28 +46,17 @@ def create_dict_counters(doc_list, query_list):
 words, queries_words, docs_counter, queries_counter = create_dict_counters(doc_list=doc_list, query_list=query_list)
 
 # %%
-
-words_index = dict()
-
-for word_index in range(len(words)):
-    words_index[words[word_index]] = word_index
-# %%
-def preproccess_words(vocabulary):
+def counters_conv2_tf_idf(counter_list, vocabulary, smooth_idf=True, sublinear_tf=False, token_len=1):
+    # preproccess_words_index 
     new_word_index = 0
-    index_dict = dict()
+    vocabulary_dict = dict()
     result_words = []
     for word in tqdm(vocabulary, desc="Vocabulary"):
-        if len(word) > 1:
+        if len(word) >= token_len:
             result_words.append(word)
-            index_dict[word] = new_word_index
+            vocabulary_dict[word] = new_word_index
             new_word_index += 1
-    
-    return result_words, index_dict
-# %%
 
-words, words_index = preproccess_words(words)
-# %%
-def counters_conv2_tf_idf(counter_list, vocabulary_dict, smooth_idf=True, sublinear_tf=False):
     # term frequency
     data = []
     col = []
@@ -75,7 +64,7 @@ def counters_conv2_tf_idf(counter_list, vocabulary_dict, smooth_idf=True, sublin
     for index in tqdm(range(len(counter_list)), desc="TF"):
         doc_words = list(counter_list[index])
         for word in doc_words:
-            if len(word) > 1:
+            if len(word) >= token_len:
                 data.append(counter_list[index][word])
                 col.append(vocabulary_dict[word])
                 row.append(index)
@@ -98,25 +87,31 @@ def counters_conv2_tf_idf(counter_list, vocabulary_dict, smooth_idf=True, sublin
         # idf(t) = log [ n / df(t) ] + 1
         idf = np.log(len(counter_list) / df) + 1
 
-    return tf, idf
+    return tf, idf, result_words
 # %%
 
-docs_tf, idf = counters_conv2_tf_idf(counter_list=docs_counter, vocabulary_dict=words_index, smooth_idf=True, sublinear_tf=True)
-docs_tf.shape
-# %%
-
-queries_tf, _ = counters_conv2_tf_idf(counter_list=queries_counter, vocabulary_dict=words_index, smooth_idf=True, sublinear_tf=True)
-queries_tf
+docs_tf, idf, words = counters_conv2_tf_idf(counter_list=docs_counter, vocabulary=words, smooth_idf=True, sublinear_tf=True, token_len=2)
+queries_tf, _, _ = counters_conv2_tf_idf(counter_list=queries_counter, vocabulary=words, smooth_idf=True, sublinear_tf=True, token_len=2)
 
 # %%
 
-def l2_norm(matrix):
-    # for r_index in tqdm(range(matrix.shape[0])):
-    #     matrix[r_index] /= np.dot(matrix[r_index], matrix[r_index].T).power(0.5).data[0]
-    # return matrix
-    for r_index in tqdm(range(matrix.shape[0])):
-        matrix[r_index] /= np.sqrt(np.sum(np.power(matrix[r_index].data, 2)))
-    return matrix
+def min_df_filter(tf_list, idf, min_df, vocabulary, samples_n, smooth_idf=True):
+    if smooth_idf:
+        idf_filter = np.log((1 + samples_n) / (1 + min_df)) + 1
+    else:
+        idf_filter = np.log(samples_n / min_df) + 1
+    
+    slim_words_index = np.where(idf <= idf_filter)[0]
+    for i in range(len(tf_list)):
+        tf_list[i] = tf_list[i][:, slim_words_index]
+    idf = idf[slim_words_index]
+
+    vocabulary = [vocabulary[index] for index in slim_words_index]
+
+    return tf_list, idf, vocabulary
+
+# %%
+[docs_tf, queries_tf], idf, words = min_df_filter([docs_tf, queries_tf], idf, 5, words, len(doc_list))
 # %%
 @njit
 def _l2_norm(data, row, indices, indptr):
@@ -173,11 +168,11 @@ def export_to_csv(ranking, method, word, alpha=0, beta=0, gamma=0, reledocs=0, n
 
 # %%
 # save results
-# export_to_csv(retrieval_ranking, "svm", len(words))
+# export_to_csv(retrieval_ranking, "vsm", len(words))
 
 # %%
 alpha = 1
-beta = 0.75
+beta = 0.5
 gamma = 0.15
 reledocs_amount = 5
 n_reledocs_amount = 1
@@ -198,26 +193,6 @@ for iter in tqdm(range(EPOCH)):
     retrieval_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
     retrieval_ranking = np.flip(retrieval_result.argsort(axis=0), axis=0).T
 
-    export_to_csv(retrieval_ranking, 'rocchio', len(words), alpha=alpha, beta=beta, reledocs=reledocs_amount, nreledocs=n_reledocs_amount, epoch=iter+1)
-
-# %%
-
-# for iter in tqdm(range(EPOCH)):
-#     re_tf_idf_queries = scipy.sparse.csr_matrix(tf_idf_queries.shape, dtype=np.float64)
-
-#     for q in range(len(query_list)):
-#         fixed_rq_doc_vector = scipy.sparse.csr_matrix((1, len(words)), dtype=np.float64)
-#         for doc_index in retrieval_ranking[q][:reledocs_amount]:
-#             fixed_rq_doc_vector += tf_idf_docs[doc_index]
-#         fixed_rq_doc_vector = fixed_rq_doc_vector.mean(axis=0)
-        
-#         re_tf_idf_queries[q] = alpha * tf_idf_queries[q] + beta * fixed_rq_doc_vector
-
-#     # Calculate second-round TF-IDF(doc, reformulate-query) Vector Space Model
-#     tf_idf_queries = re_tf_idf_queries
-#     retrieval_result = cosine_similarity(tf_idf_docs, tf_idf_queries)
-#     retrieval_ranking = np.flip(retrieval_result.argsort(axis=0), axis=0).T
-
-#     export_to_csv(retrieval_ranking, 'rocchio', len(words), alpha=alpha, beta=beta, reledocs=reledocs_amount, epoch=iter+1)
+    export_to_csv(retrieval_ranking, 'rocchio', len(words), alpha=alpha, beta=beta, gamma=gamma, reledocs=reledocs_amount, nreledocs=n_reledocs_amount, epoch=iter+1)
 
 # %%
