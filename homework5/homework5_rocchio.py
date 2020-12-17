@@ -165,7 +165,6 @@ def export_to_csv(ranking, method, word, alpha=0, beta=0, gamma=0, reledocs=0, n
 
     # save results
     now = datetime.datetime.now()
-    save_filename = 'results/'+ method +'_result' + '_word'+ str(word) + '_a' + str(alpha) + '_reledocs' + str(reledocs) + '_epoch' + str(epoch) + now.strftime("_%y%m%d_%H%M") + '.txt'
     save_filename = f'results/{method}_result_word{word}_a{alpha}_b{beta}_g{gamma}_reledocs{reledocs}_nreledocs{nreledocs}_epoch{epoch}_{now.strftime("%y%m%d_%H%M")}.txt'
     print(save_filename)
 
